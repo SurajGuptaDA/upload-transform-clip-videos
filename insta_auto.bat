@@ -1,1 +1,0 @@
-python insta_auto.py
