@@ -6,11 +6,20 @@ import boto3
 from dotenv import load_dotenv
 from gemini_test import analyze_reel_and_generate_caption
 import json
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+
 load_dotenv()
 
 # --- CONFIGURATION ---
 VIDEO_FOLDER = "./my_reels"
 POSTED_FOLDER = "./posted_reels"
+TOKEN_FILE = "token.json"
+CLIENT_SECRETS_FILE = "client_secrets.json"
+SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 
 # Meta API Credentials
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
@@ -26,7 +35,53 @@ s3_client = boto3.client(
 )
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL") 
 
-def upload_to_instagram():
+def get_youtube_service():
+    creds = None
+    if os.path.exists(TOKEN_FILE):
+        creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRETS_FILE, SCOPES)
+            creds = flow.run_local_server(port=0)
+        with open(TOKEN_FILE, "w") as token:
+            token.write(creds.to_json())
+    return build("youtube", "v3", credentials=creds)
+
+youtube = get_youtube_service()
+
+def upload_short(file_path, title, description, privacy="private"):
+
+    body = {
+        "snippet": {
+            "title": f"{title} #Shorts",
+            "description": f"{description}\n\n#Shorts",
+            "categoryId": "22",  # 22 = People & Blogs
+        },
+        "status": {
+            "privacyStatus": privacy,  # "public", "private", or "unlisted"
+            "selfDeclaredMadeForKids": False,
+        },
+    }
+
+    media = MediaFileUpload(file_path, chunksize=-1, resumable=True)
+    request = youtube.videos().insert(
+        part="snippet,status",
+        body=body,
+        media_body=media
+    )
+
+    response = None
+    while response is None:
+        status, response = request.next_chunk()
+        if status:
+            print(f"Uploaded {int(status.progress() * 100)}%")
+
+    print(f"Upload complete! Video ID: {response['id']}")
+    return response
+
+def upload_to_yt_instagram():
     videos = [f for f in os.listdir(VIDEO_FOLDER) if f.endswith('.mp4')]
     if not videos:
         print("No videos left in the folder!")
@@ -38,12 +93,24 @@ def upload_to_instagram():
         gemini_response = analyze_reel_and_generate_caption(local_path)
         # Parse the JSON response to extract the caption
         response_data = json.loads(gemini_response)
+        title = response_data.get("title", "GTA 6")
         caption = response_data.get("caption", "#movies #reels #entertainment")
     except Exception as e:
         print("Couldn't generate caption:", e)
+        title = "GTA 6"
         caption = "#movies #reels #entertainment"
 
     print(f"Processing: {next_video}")
+
+    try:
+        # Upload to YouTube Shorts
+        print("Uploading to YouTube Shorts...")
+        youtube_response = upload_short(local_path, title=title, description=caption)
+        print(f"YouTube Shorts uploaded! Video ID: {youtube_response['id']}")
+
+    except Exception as e:
+        print("Error occurred while uploading to YouTube Shorts:", e)
+        raise Exception("YouTube upload failed, skipping Instagram upload.")
 
     try:
         # Step 1: Upload video to your temporary cloud storage
@@ -121,6 +188,6 @@ if __name__ == "__main__":
         os.makedirs(VIDEO_FOLDER)
 
     while True:
-        upload_to_instagram()
+        upload_to_yt_instagram()
         print("Waiting 2 hours for next upload...")
         time.sleep(7200)

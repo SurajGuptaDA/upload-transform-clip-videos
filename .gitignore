@@ -3,3 +3,8 @@ my_reels/
 posted_reels/
 downloads/
 __pycache__/
+youtube_creds.json
+timestamps.txt
+test.py
+client_secrets.json
+token.json
